@@ -2,7 +2,7 @@ import hashlib
 import itertools
 import os
 import urllib.request
-from typing import List, Dict
+from typing import List, Dict, TypeVar, Generic
 from urllib.parse import urlparse
 
 import OpenAIAuth
@@ -20,11 +20,13 @@ from revChatGPT.V1 import AsyncChatbot as V1Chatbot
 from revChatGPT.typings import Error as V1Error
 from tinydb import TinyDB, Query
 
-import utils.network as network
-from chatbot.chatgpt import ChatGPTBrowserChatbot
+from framework import utils as network
+from framework.chatbot.chatgpt import ChatGPTBrowserChatbot
 from config import OpenAIAuthBase, OpenAIAPIKey, Config, BingCookiePath, BardCookiePath, YiyanCookiePath, ChatGLMAPI, \
-    PoeCookieAuth, SlackAuths, SlackAppAccessToken
-from exceptions import NoAvailableBotException, APIKeyNoFundsError
+    PoeCookieAuth, SlackAppAccessToken
+from framework.exceptions import NoAvailableBotException, APIKeyNoFundsError
+
+T = TypeVar("T")
 
 
 class BotManager:
@@ -309,7 +311,8 @@ class BotManager:
                 counter = counter + 1
             except OpenAIAuth.Error as e:
                 logger.error("登录失败! 请检查 IP 、代理或者账号密码是否正确{exc}", exc=e)
-            except (ConnectTimeout, RequestException, SSLError, urllib3.exceptions.MaxRetryError, ClientConnectorError) as e:
+            except (
+            ConnectTimeout, RequestException, SSLError, urllib3.exceptions.MaxRetryError, ClientConnectorError) as e:
                 logger.error("登录失败! 连接 OpenAI 服务器失败,请更换代理节点重试！{exc}", exc=e)
             except APIKeyNoFundsError:
                 logger.error("登录失败! API 账号余额不足，无法继续使用。")
@@ -452,6 +455,9 @@ class BotManager:
         )
         logger.warning("在查询 API 额度时遇到问题，请自行确认额度。")
         return account
+
+    def pick(self, type_: Generic[T]) -> T:
+        ...
 
     def pick(self, llm: str):
         if llm not in self.roundrobin:

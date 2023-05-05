@@ -1,11 +1,18 @@
 from __future__ import annotations
+import contextlib
 from typing import List, Union, Literal, Dict, Optional
+from urllib.parse import urlparse
+
+import requests
 from pydantic import BaseModel, BaseConfig, Extra
 from charset_normalizer import from_bytes
 from loguru import logger
 import os
 import sys
 import toml
+import urllib.request
+
+from framework.utils import network
 
 
 class Onebot(BaseModel):
@@ -58,6 +65,7 @@ class HttpService(BaseModel):
     debug: bool = False
     """是否开启debug，错误时展示日志"""
 
+
 class WecomBot(BaseModel):
     host: str = "0.0.0.0"
     """企业微信回调地址，需要能够被公网访问，0.0.0.0则不限制访问地址"""
@@ -75,7 +83,7 @@ class WecomBot(BaseModel):
     """企业微信应用 API 令牌 的 Token"""
     encoding_aes_key: str
     """企业微信应用 API 令牌 的 EncodingAESKey"""
-    
+
 
 class OpenAIGPT3Params(BaseModel):
     temperature: float = 0.5
@@ -430,6 +438,12 @@ class Response(BaseModel):
 
 
 class System(BaseModel):
+    proxy: Optional[str] = None
+    """代理服务器地址，不填则使用系统设置"""
+
+    use_system_proxy: bool = False
+    """使用系统代理设置"""
+
     accept_group_invite: bool = False
     """自动接收邀请入群请求"""
 
@@ -448,11 +462,11 @@ class BaiduCloud(BaseModel):
     """不合规消息自定义返回"""
 
 
-class Preset(BaseModel):
+class Prompt(BaseModel):
     command: str = r"加载预设 (\w+)"
     keywords: dict[str, str] = {}
     loaded_successful: str = "预设加载成功！"
-    scan_dir: str = "./presets"
+    scan_dir: str = "./prompts"
     hide: bool = False
     """是否禁止使用其他人 .预设列表 命令来查看预设"""
 
@@ -474,7 +488,7 @@ class Ratelimit(BaseModel):
     """超额消息"""
 
 
-class SDWebUI(BaseModel):
+class SDWebUIParams(BaseModel):
     api_url: str
     """API 基地址，如：http://127.0.0.1:7890"""
     prompt_prefix: str = 'masterpiece, best quality, illustration, extremely detailed 8K wallpaper'
@@ -501,6 +515,11 @@ class SDWebUI(BaseModel):
         extra = Extra.allow
 
 
+class AccountsModel(BaseModel):
+    """记录各种账号信息"""
+    pass
+
+
 class Config(BaseModel):
     # === Platform Settings ===
     onebot: Optional[Onebot] = None
@@ -511,6 +530,8 @@ class Config(BaseModel):
     wecom: Optional[WecomBot] = None
 
     # === Account Settings ===
+    accounts: AccountsModel = AccountsModel()
+
     openai: OpenAIAuths = OpenAIAuths()
     bing: BingAuths = BingAuths()
     bard: BardAuths = BardAuths()
@@ -526,35 +547,35 @@ class Config(BaseModel):
     trigger: Trigger = Trigger()
     response: Response = Response()
     system: System = System()
-    presets: Preset = Preset()
+    prompts: Prompt = Prompt()
     ratelimit: Ratelimit = Ratelimit()
     baiducloud: BaiduCloud = BaiduCloud()
     vits: VitsConfig = VitsConfig()
 
     # === External Utilities ===
-    sdwebui: Optional[SDWebUI] = None
+    sdwebui: Optional[SDWebUIParams] = None
 
-    def scan_presets(self):
-        for keyword, path in self.presets.keywords.items():
+    def scan_prompts(self):
+        for keyword, path in self.prompts.keywords.items():
             if os.path.isfile(path):
                 logger.success(f"检查预设：{keyword} <==> {path} [成功]")
             else:
                 logger.error(f"检查预设：{keyword} <==> {path} [失败：文件不存在]")
-        for root, _, files in os.walk(self.presets.scan_dir, topdown=False):
+        for root, _, files in os.walk(self.prompts.scan_dir, topdown=False):
             for name in files:
-                if not name.endswith(".txt"):
+                if not name.endswith(".yml") and not name.endswith(".yaml"):
                     continue
                 path = os.path.join(root, name)
-                name = name.removesuffix('.txt')
-                if name in self.presets.keywords:
+                name = name.removesuffix('.yml').removesuffix(".yaml")
+                if name in self.prompts.keywords:
                     logger.error(f"注册预设：{name} <==> {path} [失败：关键词已存在]")
                     continue
-                self.presets.keywords[name] = path
+                self.prompts.keywords[name] = path
                 logger.success(f"注册预设：{name} <==> {path} [成功]")
 
     def load_preset(self, keyword):
         try:
-            with open(self.presets.keywords[keyword], "rb") as f:
+            with open(self.prompts.keywords[keyword], "rb") as f:
                 if guessed_str := from_bytes(f.read()).best():
                     return str(guessed_str).replace('<|im_end|>', '').replace('\r', '').split('\n\n')
                 else:
@@ -620,3 +641,26 @@ class Config(BaseModel):
         except Exception as e:
             logger.exception(e)
             logger.warning("配置保存失败。")
+
+    @staticmethod
+    def __setup_system_proxy():
+        for url in urllib.request.getproxies().values():
+            return url
+
+    def check_proxy(self):
+        if self.system.proxy is None and self.system.use_system_proxy:
+            self.__setup_system_proxy()
+
+        if self.system.proxy is None:
+            return None
+
+        logger.info(f"[代理测试] 正在检查代理配置：{self.system.proxy}")
+        proxy_addr = urlparse(self.system.proxy)
+        if not network.is_open(proxy_addr.hostname, proxy_addr.port):
+            raise ValueError("无法连接至本地代理服务器，请检查配置文件中的 proxy 是否正确！")
+        requests.get("http://www.gstatic.com/generate_204", proxies={
+            "https": self.system.proxy,
+            "http": self.system.proxy
+        })
+        logger.success("[代理测试] 连接成功！")
+        return self.system.proxy
